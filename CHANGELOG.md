@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Import tasks from CalDAV servers (Baikal, Nextcloud, Fastmail, etc.): a connected CalDAV account's task collections (calendars that expose `VTODO`) can be mapped to a project and their tasks imported into FluidCalendar. Import is one-way for now - title, description, due/start dates, status, priority, and recurrence are read from the server, and an external-owned field cleared upstream (e.g. a completed task reopened) is cleared locally too so the import mirrors the server (#144)
+- Create a multi-day all-day event by dragging the mouse across multiple days on the all-day row, like Google Calendar; the New Event modal opens pre-filled as an all-day event spanning the selected days (#79)
+- Added `.github/copilot-instructions.md` with repository-wide guidance for GitHub Copilot's coding agent (setup, commands, architecture, SAAS/open-source separation, code-style conventions)
+- Show the application version in a footer on every page, linking to the project's GitHub page (#111)
 - Added a button to mark tasks as completed directly from the task quick view popup
 - Added visual indicator for externally synced tasks in task list view
 - Added Stripe configuration file (`src/lib/stripe.saas.ts`) for SAAS payment processing
@@ -63,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded the runtime from Node.js 20 to Node.js 22 (LTS): updated `.nvmrc`, both Docker base images, bumped `@types/node` to v22, and added an `engines.node >=22.11.0` constraint to `package.json`
 - Removed "Upcoming:" prefix from due dates in task views to reduce confusion with the "upcoming" label used for tasks with future start dates
 - Updated future task detection to consider tasks as "upcoming" only if they are scheduled for tomorrow or later
 - Added new `isFutureDate` utility function in date-utils
@@ -96,6 +101,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed deleting a single occurrence of a recurring Google Calendar event removing the wrong instance: single-occurrence deletes re-queried Google for the "next upcoming" instance (`timeMin: now`, `maxResults: 1`) and deleted that, so deleting a past or non-next row could silently delete a different (often future) occurrence. Single-mode deletion now targets the clicked occurrence directly. Affects all calendar views and pushed task blocks (#199)
+- Fixed the Tasks list so sorting by the Priority or Energy column orders rows by meaning (low < medium < high) instead of alphabetically by label; tasks with no priority/energy (including the "None" priority) sort to the end (#131)
+- Fixed CalDAV connection failures (unreachable server, DNS error, connection refused/timeout, or an untrusted/self-signed TLS certificate) being reported as "Failed to authenticate with CalDAV server. Please check your credentials." When the underlying failure is a network/TLS problem, the Test Connection, Connect, and calendar-discovery flows now return a connection-oriented error ("Could not connect to the CalDAV server. Please check the server URL, your network/firewall, and the server's TLS certificate.") with an HTTP 502, while genuine credential rejections still show the credentials message with HTTP 401. This stops sending users with Radicale/Nextcloud/Baikal down the wrong debugging path (#122, #117, #115)
+- Fixed being unable to connect a second CalDAV server when its username matched one already connected: the account uniqueness constraint was `(userId, provider, email)` and CalDAV stores the login username in `email`, so two different CalDAV servers sharing a username collided and the second connection failed with a misleading "Incorrect credentials" error. CalDAV account identity now includes the server URL (`(userId, provider, email, caldavUrl)` with `NULLS NOT DISTINCT`), so multiple CalDAV servers can be connected even with the same username; OAuth providers (Google/Outlook) are unaffected and still allow only one account per email. Re-adding the exact same server now returns a clear "already connected" message instead of a credentials error (#145)
+- Fixed the Docker quick-start being unreachable on `http://localhost:3000` when the operator's `.env` contained an unrelated `PORT` (e.g. `PORT=80`) or `HOSTNAME` (e.g. `localhost`): `docker-compose.yml` forwarded the whole `.env` into the app container, and the Next.js standalone server binds to `HOSTNAME:PORT`, so the app bound to the wrong address/port while compose still published `3000:3000`. The `app` service now pins `PORT=3000` and `HOSTNAME=0.0.0.0`, so the published port always reaches a listening server; the README quick-start documents that `PORT`/`HOSTNAME` in `.env` do not change where the app binds (#151)
+- Fixed connecting a personal Microsoft account (outlook.com / hotmail.com / live.com, Microsoft 365 Personal/Family) to Outlook failing with `profile-fetch-failed` after a successful sign-in; these accounts return `mail: null` from Microsoft Graph, so the account email now falls back to `userPrincipalName`. The "Connect Outlook" button is also no longer disabled when no Tenant ID is set (tenant is optional and defaults to `common`), and the Outlook redirect URI in the README, `docs/_old/outlook.md`, and the self-hosting checklist is corrected to the path the app actually uses (`/api/calendar/outlook`) (#97)
+- Corrected the Google Calendar OAuth setup instructions so the README and the in-app System Settings panel agree: both now document the two required redirect URIs (`/api/auth/callback/google` for sign-in and `/api/calendar/google` for calendar connect), and the README adds troubleshooting for the common `redirect_uri_mismatch`/"Invalid Redirect" failures (`NEXTAUTH_URL` must match the public URL; bare private IPs and `.local` hosts are rejected by Google) (#76)
+- Fixed CalDAV events created or updated in FluidCalendar appearing at the wrong time in other calendar clients (Thunderbird, Home Assistant) when their timezone differs from the server's. Timed events are now serialized with an explicit timezone (`DTSTART;TZID=<zone>` plus a generated `VTIMEZONE`, falling back to UTC `Z` when no timezone is known) instead of floating local time, so recurring events also keep their wall-clock time across DST and the `TZ` environment-variable workaround is no longer needed (#135)
+- Fixed creating and updating all-day events on CalDAV servers (Baikal, Nextcloud) failing with an error; the generated iCalendar no longer emits an invalid duplicated `VALUE=date;VALUE=DATE` parameter on `DTSTART`/`DTEND` (#100)
+- Fixed the "Hide upcoming tasks" filter on the Tasks list so it hides exactly the tasks marked "Upcoming"; it now uses the same day-granularity rule as the "Upcoming" badge instead of an instant comparison that also hid tasks starting later today (#109)
+- Auto-Schedule settings time dropdowns (Working Hours and energy-level ranges) now honor the 12h/24h preference from General settings instead of always showing 24-hour times (#129)
 - Improved all-day event UI by removing time selection when "All day" is checked, showing only date picker instead
 - Fixed Google Calendar event deletion by adding missing userId parameter for authentication
 - Fixed Outlook task sync issues with recurring tasks
@@ -119,6 +135,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced console.log with logger.error in (common)/calendar/page.tsx for proper logging.
 
 ### Removed
+
+## [1.5.0]
+
+### Changed
+
+- **Startup behavior change for self-hosters:** Docker containers now stop with a nonzero exit status if Prisma client generation or database migrations fail, instead of starting the app anyway. After upgrading, a container with a failed migration may stop or restart repeatedly. Inspect the Prisma error in the container logs, back up the database, repair the reported migration or connection issue, and restart the container. Startup will resume once preparation succeeds.
+
+### Fixed
+
+- Bundle the locked Prisma CLI and engines in self-hosted images so startup does not require registry or CDN access.
+- Google task completion timestamps now persist when completed tasks are imported or refreshed, and clear when tasks are reopened in Google.
 
 ## [1.3.0] 2025-03-25
 

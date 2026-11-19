@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine3.19 AS builder
+FROM node:22-alpine3.19 AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine3.19 AS runner
+FROM node:22-alpine3.19 AS runner
 # Install netcat and jq for JSON manipulation
 RUN apk add --no-cache netcat-openbsd jq python3 make g++
 
@@ -36,6 +36,9 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+# Keep the locked CLI and its downloaded engines available without runtime downloads.
+COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/entrypoint.sh ./entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

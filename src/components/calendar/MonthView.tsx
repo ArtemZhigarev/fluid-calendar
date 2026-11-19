@@ -12,6 +12,8 @@ import FullCalendar from "@fullcalendar/react";
 
 import { TaskModal } from "@/components/tasks/TaskModal";
 
+import { getEventEditability } from "@/lib/calendar-drag";
+import { getSelectionRange } from "@/lib/calendar-selection";
 import { useEventModalStore } from "@/lib/commands/groups/calendar";
 import { newDate } from "@/lib/date-utils";
 
@@ -25,6 +27,7 @@ import { Task, TaskStatus } from "@/types/task";
 import { CalendarEventContent } from "./CalendarEventContent";
 import { EventModal } from "./EventModal";
 import { EventQuickView } from "./EventQuickView";
+import { useCalendarDragHandlers } from "./useCalendarDragHandlers";
 
 interface MonthViewProps {
   currentDate: Date;
@@ -53,6 +56,8 @@ export function MonthView({ currentDate, onDateClick }: MonthViewProps) {
       borderColor: string;
       allDay: boolean;
       classNames: string[];
+      startEditable: boolean;
+      durationEditable: boolean;
       extendedProps?: ExtendedEventProps;
     }>
   >([]);
@@ -62,6 +67,7 @@ export function MonthView({ currentDate, onDateClick }: MonthViewProps) {
   const [isTask, setIsTask] = useState(false);
   const eventModalStore = useEventModalStore();
   const [clickedElement, setClickedElement] = useState<HTMLElement | null>(null);
+  const { handleEventDrop } = useCalendarDragHandlers();
 
   // Update events when the calendar view changes
   const handleDatesSet = useCallback(
@@ -91,12 +97,18 @@ export function MonthView({ currentDate, onDateClick }: MonthViewProps) {
           classNames: [
             item.extendedProps?.isTask ? "calendar-task" : "calendar-event",
           ],
+          ...getEventEditability(item, feeds),
+          // Resizing needs a time grid; month view only supports moving
+          durationEditable: false,
           extendedProps: {
             ...item,
             isTask: item.extendedProps?.isTask,
             isRecurring: item.isRecurring,
             status: item.extendedProps?.status,
             priority: item.extendedProps?.priority,
+            // Used as the accessible label for the timed-event color dot so
+            // calendar identity is not conveyed by color alone (issue #95).
+            calendarName: feeds.find((f) => f.id === item.feedId)?.name,
           },
         }));
 
@@ -164,13 +176,12 @@ export function MonthView({ currentDate, onDateClick }: MonthViewProps) {
   };
 
   const handleDateSelect = (selectInfo: DateSelectArg) => {
-    const start = selectInfo.start;
-    const end = selectInfo.allDay ? start : selectInfo.end;
+    const { start, end, allDay } = getSelectionRange(selectInfo);
 
     setSelectedDate(start);
     setSelectedEndDate(end);
     setSelectedEvent({
-      allDay: selectInfo.allDay,
+      allDay,
     });
     setIsEventModalOpen(true);
   };
@@ -274,6 +285,8 @@ export function MonthView({ currentDate, onDateClick }: MonthViewProps) {
         selectMirror={true}
         datesSet={handleDatesSet}
         eventContent={renderEventContent}
+        eventDrop={handleEventDrop}
+        dragRevertDuration={250}
       />
 
       <EventModal

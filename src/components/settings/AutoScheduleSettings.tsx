@@ -25,7 +25,7 @@ import { useSettingsStore } from "@/store/settings";
 import { SettingRow, SettingsSection } from "./SettingsSection";
 
 export function AutoScheduleSettings() {
-  const { autoSchedule, updateAutoScheduleSettings } = useSettingsStore();
+  const { autoSchedule, updateAutoScheduleSettings, user } = useSettingsStore();
   const { feeds, loadFromDatabase } = useCalendarStore();
 
   // Load calendar feeds when component mounts
@@ -45,7 +45,7 @@ export function AutoScheduleSettings() {
 
   const timeOptions = Array.from({ length: 24 }, (_, i) => ({
     value: i,
-    label: formatTime(i),
+    label: formatTime(i, user.timeFormat),
   }));
 
   const selectedCalendars = parseSelectedCalendars(
@@ -345,6 +345,61 @@ export function AutoScheduleSettings() {
             updateAutoScheduleSettings({ groupByProject: checked })
           }
         />
+      </SettingRow>
+
+      <SettingRow
+        label="Push Scheduled Tasks to Calendar"
+        description="Automatically create calendar events for scheduled task blocks"
+      >
+        <div className="space-y-4">
+          <Switch
+            checked={autoSchedule.pushTasksToCalendar || false}
+            onCheckedChange={(checked) =>
+              updateAutoScheduleSettings({
+                pushTasksToCalendar: checked,
+                // Preserve feed selection when toggling; user can re-enable without reconfiguring
+              })
+            }
+          />
+
+          {autoSchedule.pushTasksToCalendar && (
+            <div>
+              <Label>Target Calendar</Label>
+              <Select
+                value={autoSchedule.pushTasksFeedId || ""}
+                onValueChange={(value) =>
+                  updateAutoScheduleSettings({
+                    pushTasksFeedId: value || null,
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a calendar" />
+                </SelectTrigger>
+                <SelectContent>
+                  {feeds
+                    .filter((feed) => feed.type === "GOOGLE")
+                    .map((feed) => (
+                      <SelectItem key={feed.id} value={feed.id}>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: feed.color || "var(--muted)" }}
+                          />
+                          {feed.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {feeds.filter((feed) => feed.type === "GOOGLE").length === 0 && (
+                <div className="text-sm text-muted-foreground mt-2">
+                  No Google calendars found. Please connect a Google account in Calendar Settings.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </SettingRow>
     </SettingsSection>
   );

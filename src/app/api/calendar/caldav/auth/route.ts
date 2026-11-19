@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
 import { authenticateRequest } from "@/lib/auth/api-auth";
@@ -5,11 +6,13 @@ import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
 import {
+  classifyCalDAVError,
   createCalDAVClient,
   fetchCalDAVCalendars,
   formatAbsoluteUrl,
   handleFastmailPath,
   loginToCalDAVServer,
+  normalizeCalDAVServerUrl,
 } from "../utils";
 
 const LOG_SOURCE = "CalDAVAuth";
@@ -57,16 +60,23 @@ export async function POST(request: NextRequest) {
       try {
         await loginToCalDAVServer(client, serverUrl, username);
       } catch (loginError) {
+        const classified = classifyCalDAVError(loginError);
+        logger.error(
+          "Failed to login to CalDAV server",
+          {
+            kind: classified.kind,
+            error: classified.details,
+            serverUrl,
+            username,
+          },
+          LOG_SOURCE
+        );
         return NextResponse.json(
           {
-            error:
-              "Failed to authenticate with CalDAV server. Please check your credentials.",
-            details:
-              loginError instanceof Error
-                ? loginError.message
-                : String(loginError),
+            error: classified.message,
+            details: classified.details,
           },
-          { status: 401 }
+          { status: classified.status }
         );
       }
 
@@ -75,22 +85,18 @@ export async function POST(request: NextRequest) {
 
       // If path is provided, try to fetch calendars to verify the path
       if (caldavPath) {
+        // Build the absolute URL outside the network try so a malformed path
+        // (a local construction error) stays a 400 bad-path response and is not
+        // misclassified as an upstream connection failure.
+        let fullUrl: string;
         try {
-          logger.info(
-            `Verifying CalDAV path: ${caldavPath}`,
-            { fullUrl: formatAbsoluteUrl(serverUrl, caldavPath), username },
-            LOG_SOURCE
-          );
-
-          await fetchCalDAVCalendars(client);
-        } catch (pathError) {
+          fullUrl = formatAbsoluteUrl(serverUrl, caldavPath);
+        } catch (urlError) {
           logger.error(
-            "Failed to validate CalDAV path",
+            "Invalid CalDAV path",
             {
               error:
-                pathError instanceof Error
-                  ? pathError.message
-                  : String(pathError),
+                urlError instanceof Error ? urlError.message : String(urlError),
               caldavPath,
               serverUrl,
               username,
@@ -102,19 +108,61 @@ export async function POST(request: NextRequest) {
               error:
                 "Failed to validate the CalDAV path. Please check the path and try again.",
               details:
-                pathError instanceof Error
-                  ? pathError.message
-                  : String(pathError),
+                urlError instanceof Error ? urlError.message : String(urlError),
+            },
+            { status: 400 }
+          );
+        }
+
+        try {
+          logger.info(
+            `Verifying CalDAV path: ${caldavPath}`,
+            { fullUrl, username },
+            LOG_SOURCE
+          );
+
+          await fetchCalDAVCalendars(client);
+        } catch (pathError) {
+          // Path validation runs another CalDAV network call after login; a
+          // connection/TLS failure here must be reported as a connection error,
+          // not a bad-path error. Non-connection failures keep the 400 path
+          // message.
+          const classified = classifyCalDAVError(pathError);
+          logger.error(
+            "Failed to validate CalDAV path",
+            {
+              kind: classified.kind,
+              error: classified.details,
+              caldavPath,
+              serverUrl,
+              username,
+            },
+            LOG_SOURCE
+          );
+          if (classified.kind === "connection") {
+            return NextResponse.json(
+              { error: classified.message, details: classified.details },
+              { status: classified.status }
+            );
+          }
+          return NextResponse.json(
+            {
+              error:
+                "Failed to validate the CalDAV path. Please check the path and try again.",
+              details: classified.details,
             },
             { status: 400 }
           );
         }
       }
 
-      // Successfully connected, add the account to the database
-      const fullUrl = caldavPath
-        ? formatAbsoluteUrl(serverUrl, caldavPath)
-        : serverUrl;
+      // Successfully connected, add the account to the database. Canonicalize
+      // the stored URL so trivial textual variants of the same server collapse
+      // to one value - this URL is part of the account uniqueness key, so it
+      // keeps the duplicate guard from being bypassed by e.g. a trailing slash.
+      const fullUrl = normalizeCalDAVServerUrl(
+        caldavPath ? formatAbsoluteUrl(serverUrl, caldavPath) : serverUrl
+      );
 
       const account = await prisma.connectedAccount.create({
         data: {
@@ -136,6 +184,27 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({ success: true, accountId: account.id });
     } catch (error) {
+      // A unique-constraint violation here means this exact CalDAV server +
+      // username is already connected for this user (a genuine duplicate).
+      // Surface a clear conflict instead of a misleading "credentials" error.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        logger.warn(
+          "CalDAV server already connected for this user",
+          { serverUrl, username },
+          LOG_SOURCE
+        );
+        return NextResponse.json(
+          {
+            error:
+              "This CalDAV server is already connected for this account.",
+          },
+          { status: 409 }
+        );
+      }
+
       logger.error(
         "Error connecting to CalDAV server",
         {
